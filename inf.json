@@ -1,0 +1,12 @@
+{
+  "name": "kpaper",
+  "author": "kriaiss",
+  "version": "1.0.0",
+  "description": "simple live wallpaper engine",
+  "dependencies": [
+    "pyqt6",
+    "pyobjc-framework-appkit",
+    "pyobjc-framework-foundation"
+  ],
+  "settings": ["toggle wallpaper", "select video wallpaper"]
+}
