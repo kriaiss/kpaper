@@ -9,7 +9,7 @@
     </pre>
 </div>
 <p align="center">
-    native cocoa-level live wallpaper engine and widget injector for ktools. low-level desktop manipulation without the 1gb ram overhead.
+    Desktop wallpaper and widget host for ktools. 
 </p>
 <p align="center">
     <img src="https://img.shields.io/badge/python-3.12+-blue?style=flat-square" alt="Python">
@@ -18,173 +18,87 @@
 
 ⠀
 
-# what is this?
+## What is kpaper?
 
-kpaper is a high-performance desktop backend plugin built to purge bloated standalone wallpaper apps and heavy web-view desktop wrappers from your system. instead of spawning an independent app that hogs your system memory just to loop a video, it initializes a headless frame, translates screen geometries, and hooks directly into the core darwin appkit window server via python-objc bridges.
+`kpaper` is a desktop backend plugin for `ktools`. It acts as a headless frame that hooks directly into the Darwin AppKit window server via PyObjC. By intercepting macOS window levels, it places video wallpapers and widgets directly on your desktop layer, safely behind all your active workspaces.
 
-it doesn't just fake a borderless background window. it forces the layout into the native -2147483623 desktop window level (kCGDesktopWindowLevel), positioning your live wallpaper exactly behind your active workspaces while acting as a core mounting matrix for external add-on widgets.
-
-### features
-
-* native appkit placement: injects directly into the macOS window subsystem. stays perfectly pinned beneath all active apps, completely ignoring mission control, launchpad, and workspace switchers.
-* zero-daemon footprint: runs entirely inside the ktools lifecycle thread. no heavy background helper processes or battery-draining telemetry left behind in the system tree.
-* ffmpeg static sync: automatically extracts the initial video frame using a local ffmpeg pipeline, syncing it to the native cocoa desktop image URL to prevent black flashes, rendering gaps, or wallpaper resets on display wake.
-* smart power throttling: completely drops video engine registers and halts hardware acceleration player threads upon system sleep or screen lock, guaranteeing zero battery impact when you are away.
+### Core Features
+* **Native AppKit Placement**: Stays permanently pinned beneath active apps. It completely ignores Mission Control, Launchpad, and workspace switchers. 
+* **Multi-Monitor Support**: Translates geometries and dynamically swaps wallpapers and widgets across connected displays without crashing.
+* **Power Throttling**: Intercepts `NSWorkspaceWillSleepNotification` to automatically pause video playback and unmount widgets when your system goes to sleep, preventing battery drain.
 
 ⠀
 
-# how to use
+## How to Use (For Users)
 
-* trigger the video path selection dialog from your ktools configuration setup.
-* feed it any standard .mp4 or .mov asset. kpaper will automatically execute a fast background shell to spin up the sync frames and dock configurations.
-* toggle the live state via your ktools action lists to seamlessly mount or completely destroy the active video stream layout on the fly.
+1. Download the `kpaper` `.zip` archive from the Releases page.
+2. Open the **ktools Plugin Manager** from your menu bar and click **import plugins** to install it.
+3. The plugin automatically registers itself. Click **kpaper: select video wallpaper**.
+4. Choose an `.mp4` or `.mov` file. `kpaper` will instantly loop it on the desktop.
+5. Click **kpaper: change monitor** to cycle the wallpaper and all attached widgets across your multiple displays.
 
 ⠀
 
-# the code breakdown (most interest part :>)
+## The API (For Addon Developers)
 
-## kpaper widget engine (kp.spawn_widget(widget_class, interactive=True))
+`kpaper` acts as a window layer injection engine. If you want to render custom overlay components (clocks, stats, audio visualizers) directly onto the desktop layer, do not build your own window logic. Use the `kpaper` spawning pipeline.
 
-kpaper isn't just a live wallpaper loops runner. it acts as a low-level window layer injection engine for macos. if u want to render custom overlay components (clocks, stats, visualizers) directly onto the desktop layer without spawning high-overhead standalone apps, use the kpaper spawning pipeline.
+### 1. Connecting to kpaper
 
-### about
-
-* window architecture: widgets are decoupled from the core loop and wrapped into raw appkit window wrappers under the hood.
-* native behavior: both interactive and passive layouts automatically strip system window shadows (setHasShadow_(False)) and lock themselves across all virtual workspaces using CanJoinAllSpaces | Stationary | IgnoresCycle behaviors.
-* memory management: instances are stored in the engine's internal tracking array. when kpaper unloads, it automatically triggers .close() and .deleteLater() loops across all spawned components to prevent orphan carbon windows.
-
-### usage
-
-u don't instantiate windows manually via standard qt hooks. instead, grab the kpaper handle from the core plugins map and feed it ur widget class:
+Your plugin must dynamically request the `kpaper` instance from the `ktools` core engine. Do this inside your plugin's event loop or UI generation phase, **not** in `__init__`, because `kpaper` might load after your plugin.
 
 ```python
-"""query the engine and spawn a background frame"""
 kp = self.ktools.plugins.get('kpaper')
 if kp and hasattr(kp, 'spawn_widget'):
-    self.widget = kp.spawn_widget(lambda kt: MyClockWidget(kt), interactive=False)
+    # kpaper is installed and ready
 ```
 
-⠀
+### 2. Spawning a Widget
 
-## interactive vs passive layers (window levels)
+To inject a custom PyQt6 widget onto the desktop, pass a constructor or lambda to `kp.spawn_widget()`. 
 
-managing input routing on macos desktop layouts requires strict control over darwin window hierarchies. the interactive flag changes how appkit intercepts inputs.
-
-### about
- 
-* interactive (true): injects window level -2147483601. the frame catches mouse clicks, tracks cursor hover ticks, and gets structural behavior 128 appended so it stays responsive above the wallpaper layer. use this for custom desktop docks, interactive terminals, or control decks.
-* passive (false): injects window level -2147483622. forces setIgnoresMouseEvents_(True) and drops window activation focus hooks. clicks drop straight through the layout onto the desktop file manager or wallpaper. use this for clocks, status bars, and ambient graphs that must never steal focus.
-
-### usage 
+* `interactive=False`: The widget is pushed to the absolute bottom layer (`kCGDesktopWindowLevel - 1`). It ignores all mouse clicks and hovers. Perfect for clocks.
+* `interactive=True`: The widget is placed slightly higher (`kCGDesktopWindowLevel + 1`). It can receive mouse clicks (e.g., a desktop music player).
 
 ```python
-"""interactive overlay entry point"""
-self.widget = kp.spawn_widget(TerminalWidget, interactive=True)
-
-"""non-interactive background panel"""
-self.widget = kp.spawn_widget(HardwareMonitorWidget, interactive=False)
+# Pass a lambda that returns your initialized QWidget
+self.widget = kp.spawn_widget(lambda kt: MyCustomWidget(kt, self.config), interactive=False)
 ```
 
-⠀
+`kpaper` will automatically:
+- Strip the Qt window frame.
+- Inject the necessary `NSWindowCollectionBehaviorCanJoinAllSpaces` flags so it survives space switching.
+- Make the background translucent.
+- Track its lifecycle internally.
 
-# good manners (best practices)
+### 3. Positioning on the Correct Monitor
 
-follow these rules or ur widget will lag the system compositor and leak memory registers.
+`kpaper` manages multi-monitor translations. If the user clicks "change monitor", `kpaper` will automatically move your widget, but you need to know where to place it initially. 
 
-### 1. async data workers (the thread rule)
-
-blocking cli bindings or slow network pipes will freeze the core ktools ui loop if executed inside the main thread. offload all tracking loops.
-
-### about
-
-* the restriction: calling external tools like nowplaying-cli or scraping endpoints like curl wttr.in directly inside your drawing functions will stall the qt compositor frame rate.
-* the fix: isolate telemetry routines inside a dedicated QThread pipeline. push string chunks back to your interface labels strictly via pyqtSignal events.
-* cleanup duty: workers must be stoppable. implement an internal state flag (self._alive) so threads finish execution loops cleanly when the engine requests a shutdown.
-
-### usage
+Use `kp.get_target_screen_geometry()` to get the `QRect` of the display `kpaper` is currently rendering on.
 
 ```python
-class TelemetryThread(QThread):
-    data_ready = pyqtSignal(str)
-    def __init__(self):
-        super().__init__()
-        self._alive = True
-
-    def run(self):
-        try:
-            res = subprocess.check_output("nowplaying-cli get title", shell=True).decode("utf-8").strip()
-            if self._alive and res:
-                self.data_ready.emit(res)
-        except:
-            if self._alive: self.data_ready.emit("N/A")
-
-    def stop(self):
-        self._alive = False
-        self.wait()
+if self.widget:
+    screen = kp.get_target_screen_geometry()
+    
+    # Center the widget on the active monitor
+    x = screen.x() + (screen.width() - self.widget.width()) // 2
+    y = screen.y() + (screen.height() - self.widget.height()) // 2
+    
+    self.widget.move(x, y)
+    self.widget.show()
 ```
 
-⠀
+### 4. Cleanup and Unloading
 
-### 2. macos power management (app nap control)
-
-darwin is ruthless with background loops and window server allocations. you must explicitly adapt to macos power states.
-
-### about
-
-* sleep trapping: listen to NSWorkspaceWillSleepNotification and com.apple.screenIsLocked. the millisecond they trigger, instantly drop widget pointers and execute close() to let macos suspend operations cleanly without corrupting window frames.
-* wake buffer: trap NSWorkspaceDidWakeNotification to restore your layout space. always chain the initialization sequence within a QTimer.singleShot delay loop (2-3 seconds) to let the core window server rebuild graphics layers before mounting layouts.
-* app nap bypass: prevent the system from throttling your worker threads into low-performance efficiency cores. initialize an NSProcessInfo tracking activity using power options (1 << 10) | (1 << 40) to lock active runtime execution privileges.
-
-### usage
+You **must** destroy your own widget when your plugin is unloaded, otherwise you will leave zombie C++ objects in memory. `kpaper` dynamically detects deleted widgets and safely drops them from its render loop by intercepting `RuntimeError`, so you don't need to notify `kpaper`—just delete your object.
 
 ```python
-"""prevent app nap throttling on setup"""
-self.activity = NSProcessInfo.processInfo().beginActivityWithOptions_reason_(
-    (1 << 10) | (1 << 40), "keep background worker alive"
-)
-
-"""sleep handler"""
-def handleSleep_(self, notification):
+def unload(self):
     if self.widget:
         self.widget.close()
+        self.widget.deleteLater()
         self.widget = None
 ```
-
-⠀
-
-### 3. state verification & layout safety
-
-avoid graphics pipeline desync loops when dealing with persistent configurations and layer mutations.
-
-### about
-
-* config separation: never do heavy file system IO loops when drawing layouts. read configs once on boot or track states using an isolated cache path (self.config_path).
-* layout regeneration: if a user mutates layout sizes or toggles sub-components on the fly, don't attempt complex element geometry shifting. clear out layout item counts dynamically, destroy internal widget parents safely, and rebuild the interface map from scratch.
-* existence check: before accessing external plugin interfaces via self.ktools.plugins.get(), always validate method availability (hasattr(kp, 'spawn_widget')) to prevent full engine crashes if a dependency gets unloaded mid-session.
-
-### usage
-
-```python
-def refresh_layout(self):
-    """clear old objects from tree safely"""
-    for i in reversed(range(self.layout.count())): 
-        self.layout.itemAt(i).widget().setParent(None)
-    
-    """re-instantiate elements using updated state matrices"""
-    self.label = QLabel()
-    self.layout.addWidget(self.label)
-```
-
-⠀
-
-### 4. read the ktools api before building ur widget. otherwise, u'll just write absolute garbage that lags the system.
-
-⠀
-
-### final thoughts
-
-i might have missed something. even though this is a full-blown api, i’m still just a human... (yes i just copied this from ktools readme, coz why not lol)
-
-thanks for reading this btw.
 
 by kriaiss.
