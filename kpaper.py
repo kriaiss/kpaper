@@ -15,6 +15,10 @@ class KPaperWindow(WallpaperWindow):
     def __init__(self, ktools):
         super().__init__(ktools)
         
+        # flashes fix
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+        self.setStyleSheet("background-color: black;")
+        
         kp = self.ktools.plugins.get("kpaper")
         screen = kp.get_target_screen_geometry() if kp and hasattr(kp, 'get_target_screen_geometry') else QApplication.primaryScreen().geometry()
         self.setGeometry(screen)
@@ -30,14 +34,9 @@ class KPaperWindow(WallpaperWindow):
         self.audio_output.setVolume(0.0)
         self.player.setAudioOutput(self.audio_output)
         self.player.setVideoOutput(self.video_widget)
-        self.player.mediaStatusChanged.connect(self._loop_video)
 
-    def _loop_video(self, status):
-        if status == QMediaPlayer.MediaStatus.EndOfMedia:
-            self.player.setPosition(0)
-            self.player.play()
-
-
+        # native loop
+        self.player.setLoops(-1)
 
 class Plugin:
     def __init__(self, ktools):
