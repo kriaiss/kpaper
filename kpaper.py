@@ -34,9 +34,13 @@ class KPaperWindow(WallpaperWindow):
         self.audio_output.setVolume(0.0)
         self.player.setAudioOutput(self.audio_output)
         self.player.setVideoOutput(self.video_widget)
+        # avfoundation leaks textures on infinite loop, seek to start instead
+        self.player.mediaStatusChanged.connect(self._on_media_status)
 
-        # native loop
-        self.player.setLoops(-1)
+    def _on_media_status(self, status):
+        if status == QMediaPlayer.MediaStatus.EndOfMedia:
+            self.player.setPosition(0)
+            self.player.play()
 
 class Plugin:
     def __init__(self, ktools):
@@ -142,6 +146,8 @@ class Plugin:
             QTimer.singleShot(100, lambda: self._apply_widget_native_flags(widget))
             
             self.widgets.append(widget)
+            # remove destroyed widgets or self.widgets hoards zombies forever
+            widget.destroyed.connect(lambda: self.widgets.remove(widget) if widget in self.widgets else None)
             return widget
         except Exception as e:
             print(f"kpaper error spawning: {e}")
@@ -165,7 +171,6 @@ class Plugin:
                     window.setIgnoresMouseEvents_(True)
                     window.setAcceptsMouseMovedEvents_(True)
 
-                # wallpaper vanishes when switching spaces without these flags. makes sense tbh
                 behavior = (NSWindowCollectionBehaviorCanJoinAllSpaces | 
                             NSWindowCollectionBehaviorStationary | 
                             NSWindowCollectionBehaviorIgnoresCycle)
@@ -215,15 +220,18 @@ class Plugin:
             self.shell = None
             gc.collect()
 
+    # pause instead of nuking player/window or macos desktop layer leaks 8mb per wake
     @objc.python_method
     def handleSleep_(self, notification):
-        print(f"kpaper: system lock/sleep detected via {notification.name()}")
-        self.unload_wallpaper()
+        if self.shell and hasattr(self.shell, 'player'):
+            self.shell.player.pause()
 
     @objc.python_method
     def handleWake_(self, notification):
-        print(f"kpaper: system wake/unlock detected via {notification.name()}")
-        QTimer.singleShot(2000, self.load_config_and_run)
+        if self.shell and hasattr(self.shell, 'player') and self.config.get("enabled", True):
+            self.shell.player.play()
+        elif self.config.get("enabled", True) and not self.shell:
+            QTimer.singleShot(2000, self.load_config_and_run)
 
     def load_config_and_run(self):
         if not self.config.get("enabled", True): return
